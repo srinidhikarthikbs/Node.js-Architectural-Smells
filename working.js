@@ -1,190 +1,158 @@
-var path = require('path');
-var fs = require('fs');
-var mkdirp = require('mkdirp');
-var getDirName = require('path').dirname;
-var esprima = require('esprima');
-var estraverse = require('estraverse');
-var readfiles = require('node-readfiles');
-var getTree = require('./index');
-var graphviz = require('graphviz');
-var graph=require('graph-data-structure');
-var iqr = require( 'compute-iqr' );
-var stats = require("stats-analysis");
-var et = require('elapsed-timer');
+const path = require('path');
+const fs = require('fs');
+const mkdirp = require('mkdirp');
+const getDirName = require('path').dirname;
+const getTree = require('./index');
+const graphviz = require('graphviz');
+const graph = require('graph-data-structure');
+const iqr = require('compute-iqr');
+const stats = require('stats-analysis');
+const et = require('elapsed-timer');
 
-//my imports
-var updateExports = require("./updateExports");
-var updateImports = require("./updateImports");
-var updateOccurrences = require("./updateOccurrences");
-var calculateCdegree = require("./calculateCdegree");
-var stack = require("./stack");
-var updateUnusedInterfaces = require("./updateUnusedInterfaces");
-var prepareDCPPMatrix = require("./prepareDCPPMatrix");
-var calculateCoCouplingIQR = require("./calculateCoCouplingIQR");
-var calculateCoCouplingMAD = require("./calculateCoCouplingMAD");
-var findDFS = require("./findDFS");
-//var runBayes = require("./bayes_test");
+// my imports
+const updateExports = require('./updateExports');
+const updateImports = require('./updateImports');
+const updateOccurrences = require('./updateOccurrences');
+const calculateCdegree = require('./calculateCdegree');
+const updateUnusedInterfaces = require('./updateUnusedInterfaces');
+const prepareDCPPMatrix = require('./prepareDCPPMatrix');
+const calculateCoCouplingIQR = require('./calculateCoCouplingIQR');
+const calculateCoCouplingMAD = require('./calculateCoCouplingMAD');
+const findDFS = require('./findDFS');
 
-var g1=graph();
-var g = graphviz.digraph("G");
-g.set("size", "10,8.5");
-g.set("ratio", "fill");
+const g1 = graph();
+const g = graphviz.digraph('G');
+g.set('size', '10,8.5');
+g.set('ratio', 'fill');
 
-//call the other script and get the directory object
-var input_path = "test";
-if(!(process.argv[2]))
-	console.log("Please specify an appropriate input path");
-else
-	if(!process.argv[2].length)
-		console.log("Please specify an appropriate input path");
-	else{
-		input_path = process.argv[2].split("/")[process.argv[2].split("/").length-2];
-		console.log(input_path)
-		getTree(process.argv[2], handleTree);
-	}
+// call the other script and get the directory object
+let inputPath = 'test';
+if (!(process.argv[2])) { console.log('Please specify an appropriate input path'); } else
+if (!process.argv[2].length) { console.log('Please specify an appropriate input path'); } else {
+  inputPath = process.argv[2].split('/')[process.argv[2].split('/').length - 2];
+  console.log(inputPath);
+  getTree(process.argv[2], handleTree);
+}
 
 
+function writeFile(path, contents, cb) {
+  mkdirp(getDirName(path), (err) => {
+    if (err) return cb(err);
+    fs.writeFile(path, contents, cb);
+  });
+}
 
-	function writeFile(path, contents, cb) {
-		mkdirp(getDirName(path), function (err) {
-			if (err) return cb(err);
+function printExportsImportsOccurrences(root) {
+  if (!root) return;
+  console.log(root.filePath);
+  if (root.isFile) {
+    console.log(root.interfaceUsage);
+  }
+  for (let i = 0; i < root.children.length; i++) { printExportsImportsOccurrences(root.children[i]); }
+}
 
-			fs.writeFile(path, contents, cb);
-		});
-	}
+const allFiles = [];
 
-	function printExportsImportsOccurrences(root) {
-		if (!root) return;
-		console.log(root.file_path)
-		if (root.isFile) {
-        //console.log(root.exports_list);
-        //console.log(root.imports_list);
-        //console.log(root.occurrences);
-        //console.log(root.cdegree);
-        console.log(root.interface_usage);
+function storeAllFiles(root) {
+  if (root.isFile) {
+    allFiles.push(root);
+    return;
+  }
+  if (root.isDir) {
+    for (let i = 0; i < root.children.length; i++) {
+      storeAllFiles(root.children[i]);
     }
-    for (var i = 0; i < root.children.length; i++)
-    	printExportsImportsOccurrences(root.children[i]);
+  }
 }
 
-var allFiles = [];
+const unusedInterfaces = [];
 
-function storeAllFiles(root){
-	if (root.isFile) {
-		allFiles.push(root);
-		return;
-	}
-	if (root.isDir) {
-		for (var i = 0; i < root.children.length; i++) {
-			storeAllFiles(root.children[i]);
-		}
-		return;
-	}
+const DCPPMatrix = [];
+const DCPPAllValues = [];
+
+function getDCPPValues() {
+  let output = '';
+  for (let i = 0; i < DCPPMatrix.length; i++) {
+    output = `${output}\n${JSON.stringify(DCPPMatrix[i])}`;
+  }
+  return output;
 }
 
-var unused_interfaces = [];
-
-var dcpp_matrix = [];
-var dcpp_all_values = [];
-
-function getDCPPValues(){
-	var output = "";
-	for(var i=0;i<dcpp_matrix.length;i++){
-		output = output+"\n"+JSON.stringify(dcpp_matrix[i]);
-	}
-	return output;
-}
-
-var cocoupling_iqr = [], cocoupling_mad = [];
+const coCouplingIQR = [];
+const coCouplingMAD = [];
 
 function handleTree(root) {
-    //your code goes here
-    console.log("\n\nProgress:")
+  // your code goes here
+  console.log('\n\nProgress:');
 
-    //runBayes('./skv_concerns/', root);
+  // extract exports and store them
+  const totalTime = new et.Timer('totalTime');
+  totalTime.start();
 
-    //extract exports and store them
-    //console.log(root.children.length)
-    var total_time = new et.Timer("total_time");
-    total_time.start();
+  root = updateExports(root);
 
-    root = updateExports(root);
+  // next task of extracting imports, storing them
+  root = updateImports(root, g, g1);
 
-    //next task of extracting imports, storing them
-    root = updateImports(root, g, g1);
+  // find occurrences
+  root = updateOccurrences(root);
 
-    //find occurrences
-    root = updateOccurrences(root);
+  storeAllFiles(root);
 
-    storeAllFiles(root);
-    //console.log(allFiles.length)
+  // calculate cdegree
+  root = calculateCdegree(root, allFiles);
 
-    //calculate cdegree
-    root = calculateCdegree(root, allFiles);
+  findDFS(g1, inputPath);
 
-    findDFS(g1, input_path);
+  writeFile(path.join(__dirname, `./output/${inputPath}/dot_result.dot`), g.to_dot(), (err) => {
+    if (err) {
+      return console.log(err);
+    }
 
-    //console.log(g.to_dot());
-    writeFile(path.join(__dirname, "./output/"+input_path+"/dot_result.dot"), g.to_dot(), function(err) {
-    	if(err) {
-    		return console.log(err);
-    	}
+    console.log('Dot File was saved');
+  });
 
-    	console.log("Dot File was saved");
-    });
+  updateUnusedInterfaces(root, unusedInterfaces);
+  writeFile(path.join(__dirname, `./output/${inputPath}/unusedInterfaces.txt`), JSON.stringify(unusedInterfaces, null, 4), (err) => {
+    if (err) {
+      return console.log(err);
+    }
 
-    //printExportsImportsOccurrences(root);
-
-    updateUnusedInterfaces(root, unused_interfaces);
-    //console.log("unused_interfaces: "+unused_interfaces.length);
-    writeFile(path.join(__dirname, "./output/"+input_path+"/unused_interfaces.txt"), JSON.stringify(unused_interfaces, null, 4), function(err) {
-    	if(err) {
-    		return console.log(err);
-    	}
-
-    	console.log("Unused Interfaces was saved");
-    });
+    console.log('Unused Interfaces was saved');
+  });
 
 
-    prepareDCPPMatrix(root, dcpp_matrix, dcpp_all_values);
-    writeFile(path.join(__dirname, "./output/"+input_path+"/dcpp_matrix.txt"), getDCPPValues(), function(err) {
-    	if(err) {
-    		return console.log(err);
-    	}
+  prepareDCPPMatrix(root, DCPPMatrix, DCPPAllValues);
+  writeFile(path.join(__dirname, `./output/${inputPath}/DCPPMatrix.txt`), getDCPPValues(), (err) => {
+    if (err) {
+      return console.log(err);
+    }
 
-    	console.log("DCPP Matrix was saved");
-    });
+    console.log('DCPP Matrix was saved');
+  });
 
-    //console.log("dcpp: "+dcpp_all_values.length);
-    //console.log(dcpp_all_values)
+  const IQRValue = 1.5 * iqr(DCPPAllValues);
+  calculateCoCouplingIQR(root, IQRValue, coCouplingIQR);
+  writeFile(path.join(__dirname, `./output/${inputPath}/coCouplingIQR.txt`), JSON.stringify(coCouplingIQR, null, 4), (err) => {
+    if (err) {
+      return console.log(err);
+    }
 
-    var iqr_value = 1.5*iqr( dcpp_all_values );
-    //console.log("\nIQR_value: "+iqr_value);
-    //console.log("----IQR----")    
-    calculateCoCouplingIQR(root, iqr_value, cocoupling_iqr);
-    writeFile(path.join(__dirname, "./output/"+input_path+"/cocoupling_iqr.txt"), JSON.stringify(cocoupling_iqr, null, 4), function(err) {
-    	if(err) {
-    		return console.log(err);
-    	}
+    console.log('Cocoupling IQR was saved');
+  });
 
-    	console.log("Cocoupling IQR was saved");
-    });
+  const MADValue = 2 * stats.MAD(DCPPAllValues);
+  calculateCoCouplingMAD(root, MADValue, coCouplingMAD);
+  writeFile(path.join(__dirname, `./output/${inputPath}/coCouplingMAD.txt`), JSON.stringify(coCouplingMAD, null, 4), (err) => {
+    if (err) {
+      return console.log(err);
+    }
 
-    var mad_value = 2*stats.MAD( dcpp_all_values );
-    //console.log("MAD_value: "+mad_value);
-    //console.log("----MAD----")
-    calculateCoCouplingMAD(root, mad_value, cocoupling_mad);
-    writeFile(path.join(__dirname, "./output/"+input_path+"/cocoupling_mad.txt"), JSON.stringify(cocoupling_mad, null, 4), function(err) {
-    	if(err) {
-    		return console.log(err);
-    	}
+    console.log('Cocoupling MAD was saved');
+  });
 
-    	console.log("Cocoupling MAD was saved");
-    });
-    
-    g.output( "png", path.join(__dirname, "./output/"+input_path+"/dot_graph.png"), function(err){
+  g.output('png', path.join(__dirname, `./output/${inputPath}/dot_graph.png`), (err) => {
 
-    });
-    total_time.end();
-    //console.log("Total time taken: "+total_time.diff()/1000000);
+  });
+  totalTime.end();
 }
